@@ -1,0 +1,9 @@
+.env
+state/session_*.json
+logs/*.log
+images/*.jpg
+images/*.jpeg
+images/*.png
+images/*.webp
+__pycache__/
+*.pyc
