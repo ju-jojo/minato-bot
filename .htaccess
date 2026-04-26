@@ -1,10 +1,6 @@
-# CGI実行を許可
-<Files "webhook.cgi">
-  SetHandler cgi-script
-  Options +ExecCGI
-</Files>
+AddHandler cgi-script .cgi
+Options +ExecCGI -Indexes
 
-# .env や状態ファイルへのアクセスを禁止
 <FilesMatch "^\.">
   Require all denied
 </FilesMatch>
@@ -12,12 +8,3 @@
 <FilesMatch "\.(env|log|py)$">
   Require all denied
 </FilesMatch>
-
-# state/ logs/ ディレクトリのリスト表示禁止
-Options -Indexes
-
-# images/ ディレクトリの中身は公開（Threadsからアクセス）
-<Directory "images">
-  Options -Indexes
-  Require all granted
-</Directory>
