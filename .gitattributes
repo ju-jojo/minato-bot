@@ -1,0 +1,3 @@
+*.cgi text eol=lf
+*.py text eol=lf
+*.htaccess text eol=lf

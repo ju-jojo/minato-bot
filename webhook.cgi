@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Telegram Webhook 受け口（XServer CGI）"""
 import json
 import logging
