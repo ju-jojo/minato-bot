@@ -116,28 +116,28 @@ def _generate_and_send(chat_id: int, prompt: str) -> None:
     image_prompt = result.get("image_prompt", "").strip()
     note = result.get("note", "").strip()
 
+    # メッセージ1: 投稿文のみ（ラベルなし・タップしてコピー可能）
     if post_text:
-        telegram.send_message(chat_id, f"📝 投稿文\n\n{post_text}")
-
-    if image_prompt:
-        telegram.send_message(chat_id, f"🎨 画像プロンプト\n\n{image_prompt}")
-
-    if note:
-        telegram.send_message(chat_id, f"💡 豆知識\n\n{note}")
-
-    # セッションに自動保存（/post相当）→ 画像送れば即投稿可能
-    if post_text:
+        telegram.send_message(chat_id, post_text)
         session.set_post_text(chat_id, post_text)
 
+    # メッセージ2: 画像プロンプトのみ（ラベルなし・タップしてコピー可能）
+    if image_prompt:
+        telegram.send_message(chat_id, image_prompt)
+
+    # メッセージ3: 豆知識 + ChatGPTリンク + 操作案内（補足情報を1メッセージに集約）
+    extra_lines = []
+    if note:
+        extra_lines.append(f"💡 {note}")
     if image_prompt:
         encoded = urllib.parse.quote(image_prompt)
         chatgpt_url = f"https://chatgpt.com/?q={encoded}"
+        extra_lines.append(f'<a href="{chatgpt_url}">▶ ChatGPTで画像生成</a>')
+        extra_lines.append("画像をこのトークに送ると Threads 投稿します")
+    if extra_lines:
         telegram.send_message(
             chat_id,
-            f"次のステップ:\n"
-            f"• 投稿文は自動保存済み（/status で確認可）\n"
-            f"• <a href=\"{chatgpt_url}\">▶ ChatGPTで画像生成</a>\n"
-            f"• 画像をこのトークに送信 → Threadsへ自動投稿",
+            "\n\n".join(extra_lines),
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
