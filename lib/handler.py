@@ -3,7 +3,7 @@ import logging
 import urllib.parse
 import uuid
 from pathlib import Path
-from . import config, session, telegram, threads
+from . import config, generator, session, telegram, threads
 
 
 logger = logging.getLogger("minato-bot.handler")
@@ -11,7 +11,13 @@ logger = logging.getLogger("minato-bot.handler")
 
 HELP_TEXT = """🤖 湊Threads投稿Bot
 
-【使い方】
+【AI生成（NEW）】
+✨ お題を送るだけ → 投稿文+画像プロンプトを生成
+   例:「不倫の本音」「夜中のLINE」
+✨「適当に」「おまかせ」→ AIにテーマ任せ
+✨ /gen <お題> → 明示的に生成
+
+【投稿フロー】
 1️⃣ /post <投稿文> → 投稿文を保存
 2️⃣ /prompt <プロンプト> → プロンプト保存＋ChatGPT起動リンク返信
 3️⃣ ChatGPTで生成した画像をこのトークに送信 → Threads自動投稿
@@ -78,11 +84,63 @@ def handle_command(chat_id: int, text: str) -> None:
                               disable_web_page_preview=True)
         return
 
-    # コマンド以外のテキスト
+    if text.startswith("/gen"):
+        body = text[len("/gen"):].strip()
+        _generate_and_send(chat_id, body or "適当に")
+        return
+
+    # コマンド以外のテキスト → AI生成のお題として扱う
+    if text and not text.startswith("/"):
+        _generate_and_send(chat_id, text)
+        return
+
+    # 不明なスラッシュコマンド
     telegram.send_message(
         chat_id,
-        "❓ コマンドで指示してください。/help で使い方を表示。"
+        "❓ 不明なコマンドです。/help で使い方を表示。"
     )
+
+
+def _generate_and_send(chat_id: int, prompt: str) -> None:
+    """お題から AI 生成して Telegram に分割送信"""
+    telegram.send_message(chat_id, "✍️ 生成中...（10〜20秒）")
+
+    try:
+        result = generator.generate(prompt)
+    except Exception as e:
+        logger.exception("生成失敗")
+        telegram.send_message(chat_id, f"❌ 生成失敗: {e}")
+        return
+
+    post_text = result.get("post", "").strip()
+    image_prompt = result.get("image_prompt", "").strip()
+    note = result.get("note", "").strip()
+
+    if post_text:
+        telegram.send_message(chat_id, f"📝 投稿文\n\n{post_text}")
+
+    if image_prompt:
+        telegram.send_message(chat_id, f"🎨 画像プロンプト\n\n{image_prompt}")
+
+    if note:
+        telegram.send_message(chat_id, f"💡 豆知識\n\n{note}")
+
+    # セッションに自動保存（/post相当）→ 画像送れば即投稿可能
+    if post_text:
+        session.set_post_text(chat_id, post_text)
+
+    if image_prompt:
+        encoded = urllib.parse.quote(image_prompt)
+        chatgpt_url = f"https://chatgpt.com/?q={encoded}"
+        telegram.send_message(
+            chat_id,
+            f"次のステップ:\n"
+            f"• 投稿文は自動保存済み（/status で確認可）\n"
+            f"• <a href=\"{chatgpt_url}\">▶ ChatGPTで画像生成</a>\n"
+            f"• 画像をこのトークに送信 → Threadsへ自動投稿",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
 
 
 def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) -> None:

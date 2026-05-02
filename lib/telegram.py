@@ -1,8 +1,15 @@
 """Telegram Bot API クライアント（urllib のみ、外部依存なし）"""
 import json
+import ssl
 import urllib.request
 import urllib.parse
 from . import config
+
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 
 
 API_BASE = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
@@ -17,7 +24,7 @@ def _request(method: str, params: dict | None = None) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -44,7 +51,7 @@ def get_file_path(file_id: str) -> str:
 def download_file(file_path: str) -> bytes:
     """Telegramサーバから画像バイト列を取得"""
     url = f"https://api.telegram.org/file/bot{config.TELEGRAM_BOT_TOKEN}/{file_path}"
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    with urllib.request.urlopen(url, timeout=30, context=_SSL_CTX) as resp:
         return resp.read()
 
 

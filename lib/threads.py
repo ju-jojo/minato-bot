@@ -1,9 +1,16 @@
 """Threads Graph API クライアント（urllib のみ）"""
 import json
+import ssl
 import time
 import urllib.request
 import urllib.parse
 from . import config
+
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 
 
 API_BASE = "https://graph.threads.net/v1.0"
@@ -13,13 +20,13 @@ def _post(path: str, params: dict) -> dict:
     url = f"{API_BASE}/{path}"
     data = urllib.parse.urlencode(params).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _get(path: str, params: dict) -> dict:
     url = f"{API_BASE}/{path}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=15) as resp:
+    with urllib.request.urlopen(url, timeout=15, context=_SSL_CTX) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
