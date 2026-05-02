@@ -1,9 +1,20 @@
 """Telegram メッセージのコマンドハンドラ"""
 import logging
+import re
 import urllib.parse
 import uuid
 from pathlib import Path
 from . import config, drafts, generator, session, telegram, threads
+
+
+def _parse_int_arg(arg: str) -> int | None:
+    """全角・記号混じりからも整数を抽出 ('1' '#1' '１' '　1' 全部対応)"""
+    if not arg:
+        return None
+    # 全角数字を半角に
+    arg = arg.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    m = re.search(r"\d+", arg)
+    return int(m.group()) if m else None
 
 
 logger = logging.getLogger("minato-bot.handler")
@@ -150,10 +161,11 @@ def _handle_list(chat_id: int) -> None:
 
 
 def _handle_show(chat_id: int, arg: str) -> None:
-    if not arg.isdigit():
-        telegram.send_message(chat_id, "❌ 使い方: /show 1")
+    idx = _parse_int_arg(arg)
+    logger.info(f"/show 受信: arg={arg!r} parsed_idx={idx}")
+    if idx is None:
+        telegram.send_message(chat_id, f"❌ 番号が読み取れませんでした: 「{arg}」\n半角数字で /show 1 のように送ってください")
         return
-    idx = int(arg)
     d = drafts.get_draft("minato", idx)
     if not d:
         telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
@@ -173,10 +185,11 @@ def _handle_show(chat_id: int, arg: str) -> None:
 
 def _handle_approve(chat_id: int, arg: str) -> None:
     parts = arg.split()
-    if not parts or not parts[0].isdigit():
+    idx = _parse_int_arg(parts[0]) if parts else None
+    logger.info(f"/approve 受信: arg={arg!r} parsed_idx={idx}")
+    if idx is None:
         telegram.send_message(chat_id, "❌ 使い方: /approve 1  または  /approve 1 12:00")
         return
-    idx = int(parts[0])
     scheduled_at = parts[1] if len(parts) >= 2 else None
     try:
         item = drafts.approve("minato", idx, scheduled_at)
@@ -191,10 +204,11 @@ def _handle_approve(chat_id: int, arg: str) -> None:
 
 
 def _handle_reject(chat_id: int, arg: str) -> None:
-    if not arg.isdigit():
+    idx = _parse_int_arg(arg)
+    logger.info(f"/reject 受信: arg={arg!r} parsed_idx={idx}")
+    if idx is None:
         telegram.send_message(chat_id, "❌ 使い方: /reject 1")
         return
-    idx = int(arg)
     if drafts.reject("minato", idx):
         telegram.send_message(chat_id, f"✅ #{idx} を却下しました")
     else:
