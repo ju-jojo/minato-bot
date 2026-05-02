@@ -3,7 +3,7 @@ import logging
 import urllib.parse
 import uuid
 from pathlib import Path
-from . import config, generator, session, telegram, threads
+from . import config, drafts, generator, session, telegram, threads
 
 
 logger = logging.getLogger("minato-bot.handler")
@@ -11,13 +11,23 @@ logger = logging.getLogger("minato-bot.handler")
 
 HELP_TEXT = """🤖 湊Threads投稿Bot
 
-【AI生成（NEW）】
-✨ お題を送るだけ → 投稿文+画像プロンプトを生成
-   例:「不倫の本音」「夜中のLINE」
-✨「適当に」「おまかせ」→ AIにテーマ任せ
-✨ /gen <お題> → 明示的に生成
+【夜間自動下書き → 朝承認フロー（NEW）】
+毎晩2時にローカルで下書き10本生成 → /list で確認 → /approve で予約投稿
+/list → 今日の下書き一覧
+/show N → N番の全文表示
+/approve N → N番を次の空きスロットで予約
+/approve N HH:MM → 時刻指定で予約
+/reject N → 却下
+/queue → 予約一覧
+/cancel <id> → 予約キャンセル
 
-【投稿フロー】
+【AI生成（その場で1本）】
+お題を送るだけ → 投稿文+画像プロンプトを生成
+例:「不倫の本音」「夜中のLINE」
+「適当に」「おまかせ」→ AIにテーマ任せ
+/gen <お題> → 明示的に生成
+
+【手動投稿フロー】
 1️⃣ /post <投稿文> → 投稿文を保存
 2️⃣ /prompt <プロンプト> → プロンプト保存＋ChatGPT起動リンク返信
 3️⃣ ChatGPTで生成した画像をこのトークに送信 → Threads自動投稿
@@ -25,9 +35,7 @@ HELP_TEXT = """🤖 湊Threads投稿Bot
 【その他】
 /status → 今のセッション確認
 /reset → セッションをリセット
-/help → このヘルプ
-
-⚠️ /post を使わずに画像だけ送ると「投稿文なしで投稿」となります。"""
+/help → このヘルプ"""
 
 
 def is_authorized(chat_id: int) -> bool:
@@ -89,6 +97,31 @@ def handle_command(chat_id: int, text: str) -> None:
         _generate_and_send(chat_id, body or "適当に")
         return
 
+    # ---- threads-company 連携: 下書き承認系 ----
+    if text == "/list":
+        _handle_list(chat_id)
+        return
+
+    if text.startswith("/show"):
+        _handle_show(chat_id, text[len("/show"):].strip())
+        return
+
+    if text.startswith("/approve"):
+        _handle_approve(chat_id, text[len("/approve"):].strip())
+        return
+
+    if text.startswith("/reject"):
+        _handle_reject(chat_id, text[len("/reject"):].strip())
+        return
+
+    if text == "/queue":
+        _handle_queue(chat_id)
+        return
+
+    if text.startswith("/cancel "):
+        _handle_cancel(chat_id, text[len("/cancel"):].strip())
+        return
+
     # コマンド以外のテキスト → AI生成のお題として扱う
     if text and not text.startswith("/"):
         _generate_and_send(chat_id, text)
@@ -99,6 +132,98 @@ def handle_command(chat_id: int, text: str) -> None:
         chat_id,
         "❓ 不明なコマンドです。/help で使い方を表示。"
     )
+
+
+# ---- 下書き承認系ハンドラ ----
+def _handle_list(chat_id: int) -> None:
+    items = drafts.list_drafts("minato")
+    if not items:
+        telegram.send_message(chat_id, "今日の下書きはまだ生成されていません。\n夜2時の自動生成を待つか /gen で個別生成してください。")
+        return
+    lines = [f"📋 今日の下書き ({len(items)}本)", ""]
+    for d in items:
+        head = d.get("post", "").split("\n")[0][:30]
+        lines.append(f"[{d['idx']:02d}] {head}")
+    lines.append("")
+    lines.append("/show N で全文 / /approve N で承認 / /reject N で却下")
+    telegram.send_message(chat_id, "\n".join(lines))
+
+
+def _handle_show(chat_id: int, arg: str) -> None:
+    if not arg.isdigit():
+        telegram.send_message(chat_id, "❌ 使い方: /show 1")
+        return
+    idx = int(arg)
+    d = drafts.get_draft("minato", idx)
+    if not d:
+        telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
+        return
+    # 投稿文だけ単独でコピペ可能に
+    if d.get("post"):
+        telegram.send_message(chat_id, d["post"])
+    if d.get("image_prompt"):
+        telegram.send_message(chat_id, d["image_prompt"])
+    extra = []
+    if d.get("note"):
+        extra.append(f"💡 {d['note']}")
+    extra.append(f"承認: /approve {idx}  (時刻指定: /approve {idx} 12:00)")
+    extra.append(f"却下: /reject {idx}")
+    telegram.send_message(chat_id, "\n".join(extra))
+
+
+def _handle_approve(chat_id: int, arg: str) -> None:
+    parts = arg.split()
+    if not parts or not parts[0].isdigit():
+        telegram.send_message(chat_id, "❌ 使い方: /approve 1  または  /approve 1 12:00")
+        return
+    idx = int(parts[0])
+    scheduled_at = parts[1] if len(parts) >= 2 else None
+    try:
+        item = drafts.approve("minato", idx, scheduled_at)
+    except Exception as e:
+        telegram.send_message(chat_id, f"❌ 承認失敗: {e}")
+        return
+    sched = item["scheduled_at"][:16].replace("T", " ")
+    telegram.send_message(
+        chat_id,
+        f"✅ #{idx} を承認・予約しました\n投稿時刻: {sched} (JST)\n\n/queue で予約一覧"
+    )
+
+
+def _handle_reject(chat_id: int, arg: str) -> None:
+    if not arg.isdigit():
+        telegram.send_message(chat_id, "❌ 使い方: /reject 1")
+        return
+    idx = int(arg)
+    if drafts.reject("minato", idx):
+        telegram.send_message(chat_id, f"✅ #{idx} を却下しました")
+    else:
+        telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
+
+
+def _handle_queue(chat_id: int) -> None:
+    queue = drafts.get_queue()
+    if not queue:
+        telegram.send_message(chat_id, "📭 予約はありません")
+        return
+    lines = [f"📅 予約一覧 ({len(queue)}本)", ""]
+    for item in queue:
+        sched = item["scheduled_at"][:16].replace("T", " ")
+        head = item.get("post_text", "").split("\n")[0][:25]
+        lines.append(f"{sched}  [{item['draft_idx']:02d}] {head}")
+    lines.append("")
+    lines.append("キャンセル: /cancel <id> ※ID は本文中の番号ではなくキューid")
+    telegram.send_message(chat_id, "\n".join(lines))
+
+
+def _handle_cancel(chat_id: int, arg: str) -> None:
+    if not arg:
+        telegram.send_message(chat_id, "❌ 使い方: /cancel <id>")
+        return
+    if drafts.cancel_queued(arg):
+        telegram.send_message(chat_id, f"✅ {arg} をキャンセルしました")
+    else:
+        telegram.send_message(chat_id, f"❌ {arg} は予約一覧にありません")
 
 
 def _generate_and_send(chat_id: int, prompt: str) -> None:
