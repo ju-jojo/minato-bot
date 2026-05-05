@@ -110,8 +110,9 @@ def _next_slot(now: datetime | None = None) -> str:
     return candidates[0]
 
 
-def approve(account: str, idx: int, scheduled_at: str | None = None) -> dict:
-    """draft を承認 → queue に登録"""
+def approve(account: str, idx: int, scheduled_at: str | None = None,
+            image_url: str | None = None) -> dict:
+    """draft を承認 → queue に登録（画像URL任意）"""
     draft = get_draft(account, idx)
     if not draft:
         raise ValueError(f"draft #{idx} が見つかりません")
@@ -132,6 +133,7 @@ def approve(account: str, idx: int, scheduled_at: str | None = None) -> dict:
         "draft_idx": idx,
         "post_text": draft.get("post", ""),
         "image_prompt": draft.get("image_prompt", ""),
+        "image_url": image_url or "",
         "scheduled_at": scheduled_at,
         "status": "scheduled",
         "approved_at": _now_jst().isoformat(),

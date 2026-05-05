@@ -42,12 +42,16 @@ def _check_token() -> bool:
 
 
 def _post_one(item: dict) -> tuple[bool, str]:
-    """1件投稿。テキストのみで投稿（画像なし）。"""
+    """1件投稿。image_url があれば画像つき、なければテキストのみ。"""
     text = item.get("post_text", "").strip()
+    image_url = item.get("image_url", "").strip()
     if not text:
         return False, "post_text 空"
     try:
-        post_id, permalink = threads.post_text_only(text)
+        if image_url:
+            post_id, permalink = threads.post_with_image(image_url, text)
+        else:
+            post_id, permalink = threads.post_text_only(text)
         drafts.mark_posted(item, post_id, permalink)
         return True, permalink or post_id
     except Exception as e:

@@ -29,7 +29,8 @@ def _request(method: str, params: dict | None = None) -> dict:
 
 
 def send_message(chat_id: int, text: str, parse_mode: str | None = None,
-                 disable_web_page_preview: bool = False) -> dict:
+                 disable_web_page_preview: bool = False,
+                 reply_markup: dict | None = None) -> dict:
     params = {
         "chat_id": chat_id,
         "text": text,
@@ -37,7 +38,47 @@ def send_message(chat_id: int, text: str, parse_mode: str | None = None,
     }
     if parse_mode:
         params["parse_mode"] = parse_mode
+    if reply_markup:
+        params["reply_markup"] = reply_markup
     return _request("sendMessage", params)
+
+
+def edit_message_text(chat_id: int, message_id: int, text: str,
+                      parse_mode: str | None = None,
+                      reply_markup: dict | None = None,
+                      disable_web_page_preview: bool = True) -> dict:
+    """既存メッセージの本文・ボタンを書き換え（1メッセージ更新方式の核）"""
+    params = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "disable_web_page_preview": disable_web_page_preview,
+    }
+    if parse_mode:
+        params["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        params["reply_markup"] = reply_markup
+    return _request("editMessageText", params)
+
+
+def answer_callback_query(callback_query_id: str, text: str | None = None,
+                          show_alert: bool = False) -> dict:
+    """ボタンタップに対する確認応答（タップ後のローディング解除）"""
+    params = {"callback_query_id": callback_query_id}
+    if text:
+        params["text"] = text
+        params["show_alert"] = show_alert
+    return _request("answerCallbackQuery", params)
+
+
+def build_inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict:
+    """[(label, callback_data), ...] のリストから reply_markup を作る"""
+    return {
+        "inline_keyboard": [
+            [{"text": label, "callback_data": data} for label, data in row]
+            for row in rows
+        ]
+    }
 
 
 def get_file_path(file_id: str) -> str:
@@ -58,7 +99,7 @@ def download_file(file_path: str) -> bytes:
 def set_webhook(url: str, secret_token: str | None = None) -> dict:
     params = {
         "url": url,
-        "allowed_updates": ["message"],
+        "allowed_updates": ["message", "callback_query"],
         "drop_pending_updates": True,
     }
     if secret_token:

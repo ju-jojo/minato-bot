@@ -68,17 +68,12 @@ def main():
         respond("500 Internal Server Error", '{"error":"save failed"}')
         return
 
-    # Telegram 通知
+    # Telegram 通知 + 1メッセージ更新方式でレビュー開始
     try:
         chat_id = int(config.TELEGRAM_CHAT_ID) if config.TELEGRAM_CHAT_ID else None
         if chat_id and saved > 0:
-            preview_lines = [f"📥 {date_str} の下書きを {saved} 本受信しました", ""]
-            for d in drafts_list[:saved]:
-                head = d.get("post", "").split("\n")[0][:30]
-                preview_lines.append(f"[{d.get('idx', 0):02d}] {head}")
-            preview_lines.append("")
-            preview_lines.append("/list で全件 / /show N で詳細 / /approve N で承認")
-            telegram.send_message(chat_id, "\n".join(preview_lines))
+            from lib import handler  # 循環import回避でここで読む
+            handler.start_review(chat_id, account)
     except Exception:
         logger.error(f"Telegram通知失敗: {traceback.format_exc()}")
 

@@ -312,10 +312,37 @@ def _generate_and_send(chat_id: int, prompt: str) -> None:
 
 
 def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) -> None:
-    """画像受信時の処理: Threadsへ投稿"""
+    """画像受信時の処理: 1メッセージ更新方式 か 旧手動フロー"""
+    largest = max(photo_array, key=lambda p: p.get("file_size", 0))
+    file_id = largest["file_id"]
+
+    # ===== 1メッセージ更新方式: 画像待ちモード =====
+    p = session.get_processing(chat_id)
+    if p and p.get("image_waiting_idx"):
+        idx = p["image_waiting_idx"]
+        message_id = p["message_id"]
+        try:
+            file_path = telegram.get_file_path(file_id)
+            image_bytes = telegram.download_file(file_path)
+            ext = Path(file_path).suffix or ".jpg"
+            filename = f"{uuid.uuid4().hex}{ext}"
+            save_path = config.IMAGES_DIR / filename
+            save_path.write_bytes(image_bytes)
+            image_url = f"{config.PUBLIC_BASE_URL.rstrip('/')}/images/{filename}"
+            item = drafts.approve("minato", idx, image_url=image_url)
+        except Exception as e:
+            logger.exception("画像つき承認失敗")
+            telegram.send_message(chat_id, f"❌ 画像処理失敗: {e}")
+            return
+        sched = item["scheduled_at"][5:16].replace("T", " ")
+        telegram.send_message(chat_id, f"✅ #{idx} 画像つき投稿予約: {sched}")
+        session.increment_result(chat_id, "approved_with_image")
+        _advance_or_finish(chat_id, message_id)
+        return
+
+    # ===== 旧手動フロー =====
     sess = session.load(chat_id)
     post_text = sess.get("post_text") or caption or ""
-
     if not post_text:
         telegram.send_message(
             chat_id,
@@ -323,12 +350,7 @@ def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) ->
         )
         return
 
-    # 最大解像度を選択
-    largest = max(photo_array, key=lambda p: p.get("file_size", 0))
-    file_id = largest["file_id"]
-
     telegram.send_message(chat_id, "📥 画像を受信。Threadsへ投稿中…")
-
     try:
         file_path = telegram.get_file_path(file_id)
         image_bytes = telegram.download_file(file_path)
@@ -337,7 +359,6 @@ def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) ->
         telegram.send_message(chat_id, f"❌ 画像取得失敗: {e}")
         return
 
-    # ローカル保存（公開URL用）
     ext = Path(file_path).suffix or ".jpg"
     filename = f"{uuid.uuid4().hex}{ext}"
     save_path = config.IMAGES_DIR / filename
@@ -351,9 +372,7 @@ def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) ->
         telegram.send_message(chat_id, f"❌ Threads投稿失敗: {e}")
         return
 
-    # セッションクリア
     session.clear(chat_id)
-
     msg = f"✅ 投稿完了\n\n投稿ID: {post_id}"
     if permalink:
         msg += f"\n🔗 {permalink}"
@@ -362,6 +381,13 @@ def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) ->
 
 def handle_update(update: dict) -> None:
     """Telegram update を受け取って分岐"""
+    # 1) callback_query (ボタンタップ)
+    cq = update.get("callback_query")
+    if cq:
+        handle_callback_query(cq)
+        return
+
+    # 2) message
     message = update.get("message")
     if not message:
         return
@@ -381,6 +407,17 @@ def handle_update(update: dict) -> None:
 
     text = message.get("text")
     if text:
+        # 却下後の理由リプライを feedback として記録
+        if message.get("reply_to_message"):
+            p = session.get_processing(chat_id)
+            if p and p.get("last_rejected_idx"):
+                try:
+                    feedback.append_feedback("minato", text, p.get("last_rejected_post"))
+                    session.update_processing(chat_id, last_rejected_idx=None, last_rejected_post=None)
+                    telegram.send_message(chat_id, f"📝 フィードバック記録\n\n「{text[:60]}」\n\n次回生成時に AI が反映します")
+                    return
+                except Exception:
+                    logger.exception("feedback記録失敗")
         handle_command(chat_id, text)
         return
 
@@ -388,3 +425,189 @@ def handle_update(update: dict) -> None:
         chat_id,
         "❓ テキストか画像を送ってください。/help で使い方。"
     )
+
+
+# ===== 1メッセージ更新方式 =====
+
+def _format_draft_message(idx: int, total: int, draft: dict) -> str:
+    post = draft.get("post", "").strip()
+    note = draft.get("note", "").strip()
+    parts = [
+        f"📋 {idx} / {total}",
+        "─" * 16,
+        post,
+    ]
+    if note:
+        parts.append("─" * 16)
+        parts.append(f"💡 {note[:80]}")
+    return "\n".join(parts)
+
+
+def _build_draft_buttons(idx: int) -> dict:
+    return telegram.build_inline_keyboard([
+        [("✅ 投稿", f"act:approve:{idx}"), ("🎨 画像つき", f"act:image:{idx}")],
+        [("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
+    ])
+
+
+def start_review(chat_id: int, account: str = "minato") -> dict:
+    """upload_drafts 完了時に呼ぶ。最初のメッセージを送信して processing 開始"""
+    items = drafts.list_drafts(account)
+    if not items:
+        return telegram.send_message(chat_id, "下書きがありません")
+
+    total = len(items)
+    first = items[0]
+    text = _format_draft_message(1, total, first)
+    buttons = _build_draft_buttons(first["idx"])
+    result = telegram.send_message(chat_id, text, reply_markup=buttons)
+    msg_id = result.get("result", {}).get("message_id")
+    if msg_id:
+        session.start_processing(chat_id, msg_id, total, account)
+    return result
+
+
+def _advance_or_finish(chat_id: int, message_id: int) -> None:
+    p = session.get_processing(chat_id)
+    if not p:
+        return
+    account = p["account"]
+    items = drafts.list_drafts(account)
+    # current_idx の次の draft を探す（rejected/skipped でファイル削除されてる場合考慮）
+    current = p["current_idx"]
+    next_item = None
+    for it in items:
+        if it["idx"] > current:
+            next_item = it
+            break
+
+    if not next_item:
+        # 終了サマリー
+        r = p["results"]
+        total = p["total"]
+        summary_parts = [f"✅ {total}本のレビュー完了", ""]
+        if r.get("approved"):
+            summary_parts.append(f"✅ テキストで投稿予約: {r['approved']}本")
+        if r.get("approved_with_image"):
+            summary_parts.append(f"🎨 画像つき投稿予約: {r['approved_with_image']}本")
+        if r.get("rejected"):
+            summary_parts.append(f"❌ 却下: {r['rejected']}本")
+        if r.get("skipped"):
+            summary_parts.append(f"⏭ スキップ: {r['skipped']}本")
+        summary_parts.append("")
+        summary_parts.append("/queue で予約一覧を確認できます")
+        telegram.edit_message_text(chat_id, message_id, "\n".join(summary_parts),
+                                   reply_markup={"inline_keyboard": []})
+        session.end_processing(chat_id)
+        return
+
+    # 次の下書きへ
+    session.update_processing(chat_id, current_idx=next_item["idx"], image_waiting_idx=None)
+    text = _format_draft_message(next_item["idx"], p["total"], next_item)
+    buttons = _build_draft_buttons(next_item["idx"])
+    telegram.edit_message_text(chat_id, message_id, text, reply_markup=buttons)
+
+
+def handle_callback_query(cq: dict) -> None:
+    cq_id = cq.get("id", "")
+    chat_id = cq.get("message", {}).get("chat", {}).get("id")
+    message_id = cq.get("message", {}).get("message_id")
+    data = cq.get("data", "")
+    logger.info(f"callback_query: chat_id={chat_id} data={data!r}")
+
+    if not is_authorized(chat_id):
+        telegram.answer_callback_query(cq_id, "❌ 未承認のユーザー", show_alert=True)
+        return
+
+    parts = data.split(":")
+    if len(parts) < 3 or parts[0] != "act":
+        telegram.answer_callback_query(cq_id, "❌ 不明な操作")
+        return
+
+    action = parts[1]
+    try:
+        idx = int(parts[2])
+    except ValueError:
+        telegram.answer_callback_query(cq_id, "❌ 不正なidx")
+        return
+
+    if action == "approve":
+        _cb_approve(chat_id, message_id, idx, cq_id)
+    elif action == "image":
+        _cb_image_request(chat_id, message_id, idx, cq_id)
+    elif action == "reject":
+        _cb_reject(chat_id, message_id, idx, cq_id)
+    elif action == "skip":
+        _cb_skip(chat_id, message_id, idx, cq_id)
+    else:
+        telegram.answer_callback_query(cq_id, f"❌ 不明: {action}")
+
+
+def _cb_approve(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
+    try:
+        item = drafts.approve("minato", idx)
+    except Exception as e:
+        logger.exception("approve失敗")
+        telegram.answer_callback_query(cq_id, f"❌ {e}", show_alert=True)
+        return
+    sched = item["scheduled_at"][5:16].replace("T", " ")
+    telegram.answer_callback_query(cq_id, f"✅ {sched} に予約しました")
+    session.increment_result(chat_id, "approved")
+    _advance_or_finish(chat_id, message_id)
+
+
+def _cb_image_request(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
+    draft = drafts.get_draft("minato", idx)
+    if not draft:
+        telegram.answer_callback_query(cq_id, "❌ 下書きなし", show_alert=True)
+        return
+    image_prompt = draft.get("image_prompt", "")
+    if not image_prompt:
+        telegram.answer_callback_query(cq_id, "❌ 画像プロンプトなし", show_alert=True)
+        return
+
+    telegram.answer_callback_query(cq_id, "🎨 画像生成して送ってください")
+    # ラベルなしで本文だけ（コピペしやすく）
+    telegram.send_message(chat_id, image_prompt)
+    encoded = urllib.parse.quote(image_prompt)
+    chatgpt_url = f"https://chatgpt.com/?q={encoded}"
+    telegram.send_message(
+        chat_id,
+        f'<a href="{chatgpt_url}">▶ ChatGPTで画像生成</a>\n\n生成した画像をこのトークに送信 → 自動投稿予約',
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    p = session.get_processing(chat_id)
+    total = p["total"] if p else "?"
+    text = (
+        f"📋 {idx} / {total}\n"
+        f"🎨 画像待ち中...\n\n"
+        f"{draft.get('post', '')}\n\n"
+        f"画像送信後、自動で次の下書きへ進みます。"
+    )
+    telegram.edit_message_text(chat_id, message_id, text, reply_markup={"inline_keyboard": []})
+    session.update_processing(chat_id, image_waiting_idx=idx)
+
+
+def _cb_reject(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
+    draft = drafts.get_draft("minato", idx)
+    draft_post = draft.get("post", "") if draft else None
+    drafts.reject("minato", idx)
+    telegram.answer_callback_query(cq_id, "❌ 却下しました")
+    session.increment_result(chat_id, "rejected")
+    # 理由入力を促す（force_reply）
+    telegram.send_message(
+        chat_id,
+        f"#{idx} 却下。理由があれば**このメッセージに返信**してください（学習に反映）",
+        reply_markup={"force_reply": True, "input_field_placeholder": "例: 冒頭が弱い、固有名詞がない"},
+    )
+    # rejected_idx を session に記録（リプライ受信時に紐づけ用）
+    session.update_processing(chat_id, last_rejected_idx=idx, last_rejected_post=draft_post)
+    _advance_or_finish(chat_id, message_id)
+
+
+def _cb_skip(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
+    telegram.answer_callback_query(cq_id, "⏭ スキップ")
+    session.increment_result(chat_id, "skipped")
+    _advance_or_finish(chat_id, message_id)

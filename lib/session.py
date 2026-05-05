@@ -50,6 +50,54 @@ def clear(chat_id: int) -> None:
         path.unlink()
 
 
+# ---- 1メッセージ更新方式の処理セッション ----
+def start_processing(chat_id: int, message_id: int, total: int, account: str = "minato") -> None:
+    """朝の下書きレビュー開始時に呼ぶ"""
+    s = load(chat_id)
+    s["processing"] = {
+        "message_id": message_id,
+        "current_idx": 1,
+        "total": total,
+        "account": account,
+        "image_waiting_idx": None,
+        "results": {"approved": 0, "approved_with_image": 0, "rejected": 0, "skipped": 0},
+        "started_at": _now(),
+    }
+    save(chat_id, s)
+
+
+def get_processing(chat_id: int) -> dict | None:
+    s = load(chat_id)
+    return s.get("processing")
+
+
+def update_processing(chat_id: int, **updates) -> dict | None:
+    s = load(chat_id)
+    p = s.get("processing")
+    if not p:
+        return None
+    p.update(updates)
+    s["processing"] = p
+    save(chat_id, s)
+    return p
+
+
+def increment_result(chat_id: int, key: str) -> None:
+    s = load(chat_id)
+    p = s.get("processing")
+    if not p:
+        return
+    p["results"][key] = p["results"].get(key, 0) + 1
+    s["processing"] = p
+    save(chat_id, s)
+
+
+def end_processing(chat_id: int) -> None:
+    s = load(chat_id)
+    s.pop("processing", None)
+    save(chat_id, s)
+
+
 def status(chat_id: int) -> str:
     s = load(chat_id)
     parts = []
