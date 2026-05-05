@@ -4,7 +4,7 @@ import re
 import urllib.parse
 import uuid
 from pathlib import Path
-from . import config, drafts, generator, session, telegram, threads
+from . import config, drafts, feedback, generator, session, telegram, threads
 
 
 def _parse_int_arg(arg: str) -> int | None:
@@ -28,7 +28,7 @@ HELP_TEXT = """🤖 湊Threads投稿Bot
 /show N → N番の全文表示
 /approve N → N番を次の空きスロットで予約
 /approve N HH:MM → 時刻指定で予約
-/reject N → 却下
+/reject N → 却下（理由付きで AI 学習: /reject N 冒頭が弱い 等）
 /queue → 予約一覧
 /cancel <id> → 予約キャンセル
 
@@ -204,12 +204,41 @@ def _handle_approve(chat_id: int, arg: str) -> None:
 
 
 def _handle_reject(chat_id: int, arg: str) -> None:
-    idx = _parse_int_arg(arg)
-    logger.info(f"/reject 受信: arg={arg!r} parsed_idx={idx}")
+    parts = arg.split(None, 1)
+    idx = _parse_int_arg(parts[0]) if parts else None
+    reason = parts[1].strip() if len(parts) > 1 else ""
+    logger.info(f"/reject 受信: arg={arg!r} parsed_idx={idx} reason={reason!r}")
     if idx is None:
-        telegram.send_message(chat_id, "❌ 使い方: /reject 1")
+        telegram.send_message(chat_id, "❌ 使い方: /reject 1\n  または /reject 1 冒頭が弱い、固有名詞がない")
         return
-    if drafts.reject("minato", idx):
+
+    # 却下前に投稿本文を取得（feedback 用）
+    draft = drafts.get_draft("minato", idx)
+    draft_post = draft.get("post", "") if draft else None
+
+    if not drafts.reject("minato", idx):
+        telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
+        return
+
+    # 理由があれば feedback.md に追記
+    if reason:
+        try:
+            feedback.append_feedback("minato", reason, draft_post)
+            telegram.send_message(
+                chat_id,
+                f"✅ #{idx} を却下＋フィードバック記録しました\n\n"
+                f"📝 改善指示: {reason}\n\n"
+                f"次回生成時に AI が反映します。"
+            )
+        except Exception as e:
+            logger.exception("feedback追記失敗")
+            telegram.send_message(chat_id, f"✅ #{idx} を却下しました（feedback記録失敗: {e}）")
+    else:
+        telegram.send_message(
+            chat_id,
+            f"✅ #{idx} を却下しました\n\n"
+            f"💡 ヒント: /reject {idx} 理由 と書くと AI が次回から学習します"
+        )
         telegram.send_message(chat_id, f"✅ #{idx} を却下しました")
     else:
         telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
