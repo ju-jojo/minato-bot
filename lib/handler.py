@@ -429,18 +429,27 @@ def handle_update(update: dict) -> None:
 def _format_draft_message(idx: int, total: int, draft: dict) -> str:
     post = draft.get("post", "").strip()
     note = draft.get("note", "").strip()
+    image_rec = draft.get("image_recommended", False)
     parts = [
         f"📋 {idx} / {total}",
         "─" * 16,
         post,
+        "─" * 16,
     ]
+    rec_label = "🎨 画像つき推奨" if image_rec else "✏️ テキストのみ推奨"
+    parts.append(rec_label)
     if note:
-        parts.append("─" * 16)
         parts.append(f"💡 {note[:80]}")
     return "\n".join(parts)
 
 
-def _build_draft_buttons(idx: int) -> dict:
+def _build_draft_buttons(idx: int, image_recommended: bool = False) -> dict:
+    """推奨ボタンを左に置く（タップしやすく）"""
+    if image_recommended:
+        return telegram.build_inline_keyboard([
+            [("🎨 画像つき", f"act:image:{idx}"), ("✅ テキストのみ", f"act:approve:{idx}")],
+            [("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
+        ])
     return telegram.build_inline_keyboard([
         [("✅ 投稿", f"act:approve:{idx}"), ("🎨 画像つき", f"act:image:{idx}")],
         [("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
@@ -456,7 +465,7 @@ def start_review(chat_id: int, account: str = "minato") -> dict:
     total = len(items)
     first = items[0]
     text = _format_draft_message(1, total, first)
-    buttons = _build_draft_buttons(first["idx"])
+    buttons = _build_draft_buttons(first["idx"], first.get("image_recommended", False))
     result = telegram.send_message(chat_id, text, reply_markup=buttons)
     msg_id = result.get("result", {}).get("message_id")
     if msg_id:
@@ -501,7 +510,7 @@ def _advance_or_finish(chat_id: int, message_id: int) -> None:
     # 次の下書きへ
     session.update_processing(chat_id, current_idx=next_item["idx"], image_waiting_idx=None)
     text = _format_draft_message(next_item["idx"], p["total"], next_item)
-    buttons = _build_draft_buttons(next_item["idx"])
+    buttons = _build_draft_buttons(next_item["idx"], next_item.get("image_recommended", False))
     telegram.edit_message_text(chat_id, message_id, text, reply_markup=buttons)
 
 
