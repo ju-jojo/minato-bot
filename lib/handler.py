@@ -239,9 +239,6 @@ def _handle_reject(chat_id: int, arg: str) -> None:
             f"✅ #{idx} を却下しました\n\n"
             f"💡 ヒント: /reject {idx} 理由 と書くと AI が次回から学習します"
         )
-        telegram.send_message(chat_id, f"✅ #{idx} を却下しました")
-    else:
-        telegram.send_message(chat_id, f"❌ #{idx} は存在しません")
 
 
 def _handle_queue(chat_id: int) -> None:
