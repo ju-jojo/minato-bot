@@ -70,6 +70,21 @@ def get_draft(account: str, idx: int, date_str: str | None = None) -> dict | Non
         return None
 
 
+def update_draft_post(account: str, idx: int, new_post: str, date_str: str | None = None) -> bool:
+    """下書きの投稿文を上書き保存"""
+    date_str = date_str or _today_str()
+    path = DRAFTS_DIR / account / date_str / f"{idx:02d}.json"
+    if not path.exists():
+        return False
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        d["post"] = new_post
+        path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 # ---- queue 管理 ----
 def _load_queue() -> list:
     if not QUEUE_FILE.exists():

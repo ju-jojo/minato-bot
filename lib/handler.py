@@ -404,9 +404,23 @@ def handle_update(update: dict) -> None:
 
     text = message.get("text")
     if text:
+        p = session.get_processing(chat_id)
+        # 訂正テキストの受信
+        if p and p.get("editing_idx"):
+            idx = p["editing_idx"]
+            msg_id = p["editing_message_id"]
+            session.update_processing(chat_id, editing_idx=None, editing_message_id=None)
+            if drafts.update_draft_post("minato", idx, text):
+                updated = drafts.get_draft("minato", idx)
+                display_text = _format_draft_message(idx, p["total"], updated)
+                buttons = _build_draft_buttons(idx, updated.get("image_recommended", False))
+                telegram.edit_message_text(chat_id, msg_id, display_text, reply_markup=buttons)
+                telegram.send_message(chat_id, f"✅ #{idx} を訂正しました")
+            else:
+                telegram.send_message(chat_id, f"❌ #{idx} の訂正に失敗しました")
+            return
         # 却下後の理由リプライを feedback として記録
         if message.get("reply_to_message"):
-            p = session.get_processing(chat_id)
             if p and p.get("last_rejected_idx"):
                 try:
                     feedback.append_feedback("minato", text, p.get("last_rejected_post"))
@@ -448,11 +462,11 @@ def _build_draft_buttons(idx: int, image_recommended: bool = False) -> dict:
     if image_recommended:
         return telegram.build_inline_keyboard([
             [("🎨 画像つき", f"act:image:{idx}"), ("✅ テキストのみ", f"act:approve:{idx}")],
-            [("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
+            [("✏️ 訂正", f"act:edit:{idx}"), ("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
         ])
     return telegram.build_inline_keyboard([
         [("✅ 投稿", f"act:approve:{idx}"), ("🎨 画像つき", f"act:image:{idx}")],
-        [("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
+        [("✏️ 訂正", f"act:edit:{idx}"), ("❌ 却下", f"act:reject:{idx}"), ("⏭ スキップ", f"act:skip:{idx}")],
     ])
 
 
@@ -545,6 +559,8 @@ def handle_callback_query(cq: dict) -> None:
         _cb_reject(chat_id, message_id, idx, cq_id)
     elif action == "skip":
         _cb_skip(chat_id, message_id, idx, cq_id)
+    elif action == "edit":
+        _cb_edit(chat_id, message_id, idx, cq_id)
     else:
         telegram.answer_callback_query(cq_id, f"❌ 不明: {action}")
 
@@ -617,3 +633,13 @@ def _cb_skip(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
     telegram.answer_callback_query(cq_id, "⏭ スキップ")
     session.increment_result(chat_id, "skipped")
     _advance_or_finish(chat_id, message_id)
+
+
+def _cb_edit(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
+    telegram.answer_callback_query(cq_id, "✏️ 訂正モード")
+    session.update_processing(chat_id, editing_idx=idx, editing_message_id=message_id)
+    telegram.send_message(
+        chat_id,
+        f"✏️ #{idx} の訂正文を送信してください\n\n訂正後、ボタンが再表示されます。",
+        reply_markup={"force_reply": True, "input_field_placeholder": "訂正した投稿文をここに入力"},
+    )
