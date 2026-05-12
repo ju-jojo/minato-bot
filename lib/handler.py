@@ -246,15 +246,14 @@ def _handle_queue(chat_id: int) -> None:
     if not queue:
         telegram.send_message(chat_id, "📭 予約はありません")
         return
-    lines = [f"📅 予約一覧 ({len(queue)}本)", ""]
     buttons = []
     for item in queue:
         sched = item["scheduled_at"][:16].replace("T", " ")
         head = item.get("post_text", "").split("\n")[0][:20]
-        lines.append(f"{sched}  [{item['draft_idx']:02d}] {head}")
-        buttons.append([("❌ キャンセル: " + sched, f"act:cancel:{item['id']}")])
+        label = f"{sched}  [{item['draft_idx']:02d}] {head}"
+        buttons.append([(label, f"act:cancel:{item['id']}")])
     keyboard = telegram.build_inline_keyboard(buttons)
-    telegram.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
+    telegram.send_message(chat_id, f"📅 予約一覧 ({len(queue)}本)\nタップでキャンセル", reply_markup=keyboard)
 
 
 def _handle_cancel(chat_id: int, arg: str) -> None:
