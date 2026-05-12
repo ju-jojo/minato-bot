@@ -247,13 +247,14 @@ def _handle_queue(chat_id: int) -> None:
         telegram.send_message(chat_id, "📭 予約はありません")
         return
     lines = [f"📅 予約一覧 ({len(queue)}本)", ""]
+    buttons = []
     for item in queue:
         sched = item["scheduled_at"][:16].replace("T", " ")
-        head = item.get("post_text", "").split("\n")[0][:25]
+        head = item.get("post_text", "").split("\n")[0][:20]
         lines.append(f"{sched}  [{item['draft_idx']:02d}] {head}")
-    lines.append("")
-    lines.append("キャンセル: /cancel <id> ※ID は本文中の番号ではなくキューid")
-    telegram.send_message(chat_id, "\n".join(lines))
+        buttons.append([("❌ キャンセル: " + sched, f"act:cancel:{item['id']}")])
+    keyboard = telegram.build_inline_keyboard(buttons)
+    telegram.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
 
 
 def _handle_cancel(chat_id: int, arg: str) -> None:
@@ -561,6 +562,9 @@ def handle_callback_query(cq: dict) -> None:
         _cb_skip(chat_id, message_id, idx, cq_id)
     elif action == "edit":
         _cb_edit(chat_id, message_id, idx, cq_id)
+    elif action == "cancel":
+        item_id = ":".join(parts[2:])
+        _cb_cancel_queue(chat_id, message_id, item_id, cq_id)
     else:
         telegram.answer_callback_query(cq_id, f"❌ 不明: {action}")
 
@@ -633,6 +637,24 @@ def _cb_skip(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
     telegram.answer_callback_query(cq_id, "⏭ スキップ")
     session.increment_result(chat_id, "skipped")
     _advance_or_finish(chat_id, message_id)
+
+
+def _cb_cancel_queue(chat_id: int, message_id: int, item_id: str, cq_id: str) -> None:
+    if drafts.cancel_queued(item_id):
+        telegram.answer_callback_query(cq_id, "✅ キャンセルしました")
+        # ボタンを削除して完了表示に更新
+        try:
+            telegram.edit_message_text(
+                chat_id, message_id,
+                "✅ キャンセル済み",
+                reply_markup={"inline_keyboard": []},
+            )
+        except Exception:
+            pass
+        # 残りのキューを再表示
+        _handle_queue(chat_id)
+    else:
+        telegram.answer_callback_query(cq_id, "❌ キャンセル失敗（既に投稿済みかも）", show_alert=True)
 
 
 def _cb_edit(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
