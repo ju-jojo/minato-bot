@@ -51,12 +51,15 @@ def clear(chat_id: int) -> None:
 
 
 # ---- 1メッセージ更新方式の処理セッション ----
-def start_processing(chat_id: int, message_id: int, total: int, account: str = "minato") -> None:
-    """朝の下書きレビュー開始時に呼ぶ"""
+def start_processing(chat_id: int, message_id: int, total: int,
+                     account: str = "minato", first_idx: int = 1) -> None:
+    """朝の下書きレビュー開始時に呼ぶ。
+    current_idx は表示中ドラフトの idx より小さい値にしておく
+    （_advance_or_finish が「idx > current_idx」で次を探すため）"""
     s = load(chat_id)
     s["processing"] = {
         "message_id": message_id,
-        "current_idx": 1,
+        "current_idx": first_idx - 1,
         "total": total,
         "account": account,
         "image_waiting_idx": None,

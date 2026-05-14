@@ -38,6 +38,7 @@ def save_drafts(account: str, date_str: str, drafts: list) -> int:
     saved = 0
     for d in drafts:
         idx = d.get("idx", saved + 1)
+        d["idx"] = idx  # 後段で d["idx"] を参照するので必ず埋める
         path = out_dir / f"{idx:02d}.json"
         path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
         saved += 1
@@ -156,6 +157,14 @@ def approve(account: str, idx: int, scheduled_at: str | None = None,
     queue = _load_queue()
     queue.append(item)
     _save_queue(queue)
+
+    # 承認済み draft はファイル削除（二重承認・queue重複防止）
+    draft_path = DRAFTS_DIR / account / _today_str() / f"{idx:02d}.json"
+    if draft_path.exists():
+        try:
+            draft_path.unlink()
+        except OSError:
+            logger.warning(f"draft削除失敗: {draft_path}")
     return item
 
 

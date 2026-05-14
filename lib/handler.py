@@ -64,9 +64,13 @@ def handle_command(chat_id: int, text: str) -> None:
         telegram.send_message(chat_id, HELP_TEXT)
         return
 
-    if text in ("/reset", "/cancel"):
+    if text == "/reset":
         session.clear(chat_id)
         telegram.send_message(chat_id, "✅ セッションをリセットしました")
+        return
+
+    if text == "/cancel":
+        telegram.send_message(chat_id, "❌ 使い方: /cancel <id>（予約一覧は /queue）")
         return
 
     if text == "/status":
@@ -334,7 +338,7 @@ def handle_photo(chat_id: int, photo_array: list, caption: str | None = None) ->
         sched = item["scheduled_at"][5:16].replace("T", " ")
         telegram.send_message(chat_id, f"✅ #{idx} 画像つき投稿予約: {sched}")
         session.increment_result(chat_id, "approved_with_image")
-        _advance_or_finish(chat_id, message_id)
+        _advance_or_finish(chat_id, message_id, just_acted_idx=idx)
         return
 
     # ===== 旧手動フロー =====
@@ -478,23 +482,24 @@ def start_review(chat_id: int, account: str = "minato") -> dict:
 
     total = len(items)
     first = items[0]
-    text = _format_draft_message(1, total, first)
-    buttons = _build_draft_buttons(first["idx"], first.get("image_recommended", False))
+    first_idx = first["idx"]
+    text = _format_draft_message(first_idx, total, first)
+    buttons = _build_draft_buttons(first_idx, first.get("image_recommended", False))
     result = telegram.send_message(chat_id, text, reply_markup=buttons)
     msg_id = result.get("result", {}).get("message_id")
     if msg_id:
-        session.start_processing(chat_id, msg_id, total, account)
+        session.start_processing(chat_id, msg_id, total, account, first_idx=first_idx)
     return result
 
 
-def _advance_or_finish(chat_id: int, message_id: int) -> None:
+def _advance_or_finish(chat_id: int, message_id: int, just_acted_idx: int | None = None) -> None:
     p = session.get_processing(chat_id)
     if not p:
         return
     account = p["account"]
     items = drafts.list_drafts(account)
-    # current_idx の次の draft を探す（rejected/skipped でファイル削除されてる場合考慮）
-    current = p["current_idx"]
+    # 直前に処理した idx より先のものを探す（approveで削除されない場合の自己再表示も防ぐ）
+    current = just_acted_idx if just_acted_idx is not None else p["current_idx"]
     next_item = None
     for it in items:
         if it["idx"] > current:
@@ -545,6 +550,13 @@ def handle_callback_query(cq: dict) -> None:
         return
 
     action = parts[1]
+
+    # cancel は queue id（"minato_1" 等の文字列）を受ける。int パースしない。
+    if action == "cancel":
+        item_id = ":".join(parts[2:])
+        _cb_cancel_queue(chat_id, message_id, item_id, cq_id)
+        return
+
     try:
         idx = int(parts[2])
     except ValueError:
@@ -561,9 +573,6 @@ def handle_callback_query(cq: dict) -> None:
         _cb_skip(chat_id, message_id, idx, cq_id)
     elif action == "edit":
         _cb_edit(chat_id, message_id, idx, cq_id)
-    elif action == "cancel":
-        item_id = ":".join(parts[2:])
-        _cb_cancel_queue(chat_id, message_id, item_id, cq_id)
     else:
         telegram.answer_callback_query(cq_id, f"❌ 不明: {action}")
 
@@ -578,7 +587,7 @@ def _cb_approve(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
     sched = item["scheduled_at"][5:16].replace("T", " ")
     telegram.answer_callback_query(cq_id, f"✅ {sched} に予約しました")
     session.increment_result(chat_id, "approved")
-    _advance_or_finish(chat_id, message_id)
+    _advance_or_finish(chat_id, message_id, just_acted_idx=idx)
 
 
 def _cb_image_request(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
@@ -629,13 +638,13 @@ def _cb_reject(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
     )
     # rejected_idx を session に記録（リプライ受信時に紐づけ用）
     session.update_processing(chat_id, last_rejected_idx=idx, last_rejected_post=draft_post)
-    _advance_or_finish(chat_id, message_id)
+    _advance_or_finish(chat_id, message_id, just_acted_idx=idx)
 
 
 def _cb_skip(chat_id: int, message_id: int, idx: int, cq_id: str) -> None:
     telegram.answer_callback_query(cq_id, "⏭ スキップ")
     session.increment_result(chat_id, "skipped")
-    _advance_or_finish(chat_id, message_id)
+    _advance_or_finish(chat_id, message_id, just_acted_idx=idx)
 
 
 def _cb_cancel_queue(chat_id: int, message_id: int, item_id: str, cq_id: str) -> None:
